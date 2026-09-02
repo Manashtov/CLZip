@@ -76,7 +76,7 @@ if __name__ == "__main__":
 # Remove-Item -Recurse -Force -ErrorAction SilentlyContinue build, dist, Output, *.spec.bak; Get-ChildItem -Recurse -Include __pycache__, *.pyc, *.pyo | Remove-Item -Recurse -Force
 
 # Eliminar el caché
-# 
+# Get-ChildItem -Recurse -Include __pycache__, *.pyc, *.pyo | Remove-Item -Recurse -Force
 
 # Si se compila con el script dedicado en innosetup:
 # python build_clean_dist.py 

@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem, QMenu, QMessageBox, 
     QHeaderView, QFileDialog
 )
-from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtGui import QAction, QKeySequence, QIcon
 from PyQt6.QtCore import Qt, QSettings, QFileInfo, pyqtSignal
 import qtawesome as qta
 
@@ -14,7 +14,7 @@ from src.i18n.translator import tr
 from src.core.compressor import ZstdEngine
 from src.ui.themes import ThemeManager
 from src.ui.dialogs.properties_dialog import PropertiesDialog
-from src.utils.helpers import move_to_trash, format_bytes
+from src.utils.helpers import move_to_trash, format_bytes, get_app_root
 
 
 class FileBrowserPanel(QWidget):
@@ -37,6 +37,9 @@ class FileBrowserPanel(QWidget):
         self.settings = QSettings("clzip", "FileBrowser")
         self.shortcut_settings = QSettings("clzip", "Shortcuts")
         
+        root_dir = get_app_root()
+        self.archive_ico_path = root_dir / "assets" / "archive_icon.ico"
+
         self._setup_ui()
         self._setup_persistent_actions()
 
@@ -185,7 +188,10 @@ class FileBrowserPanel(QWidget):
                         icon = qta.icon("fa5s.lock", color="#e5a93b")
                         type_str = "ZIP (Protegido)"
                     else:
-                        icon = qta.icon("fa5s.file-archive", color=pri_color)
+                        if self.archive_ico_path.exists():
+                            icon = QIcon(str(self.archive_ico_path))
+                        else:
+                            icon = qta.icon("fa5s.file-archive", color=pri_color)
                         type_str = "Compressed Archive File"
                     
                     sz = entry.stat().st_size
@@ -214,7 +220,6 @@ class FileBrowserPanel(QWidget):
         self.path_changed.emit(str(self.current_directory))
 
     def preview_archive(self, archive_path: Path):
-        """Muestra el contenido interno de un archivo comprimido sin descomprimirlo."""
         p = Path(archive_path).resolve()
         if not p.exists():
             return
@@ -228,7 +233,6 @@ class FileBrowserPanel(QWidget):
         self.preview_archive_path = p
         self.tree.clear()
 
-        # Item de retroceso para volver a la carpeta superior (funciona a 1 solo clic)
         back_item = QTreeWidgetItem([".. [Volver]", "", "Carpeta", ""])
         back_item.setIcon(0, qta.icon("fa5s.arrow-left", color="#e5a93b"))
         back_item.setData(0, Qt.ItemDataRole.UserRole, "__BACK__")
