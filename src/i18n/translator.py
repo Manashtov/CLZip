@@ -23,7 +23,7 @@ TRANSLATIONS = {
         "bm_documents": "Documentos",
         "bm_downloads": "Descargas",
         "ctx_compress": "Comprimir archivo(s)...",
-        "ctx_extract": "Extraer aquí...",
+        "ctx_extract": "Extraer en carpeta...",
         "ctx_copy": "Copiar",
         "ctx_paste": "Pegar",
         "ctx_select_all": "Seleccionar todo",
@@ -46,6 +46,11 @@ TRANSLATIONS = {
         "pwd_active": "Contraseña activa configurada.",
         "pwd_cleared": "Contraseña eliminada.",
         "status_zip_stage": "Procesando",
+        "status_tar_stage": "Creando contenedor TAR",
+        "status_zstd_stage": "Comprimiendo con Zstandard",
+        "status_extract_stage": "Descomprimiendo archivos",
+        "status_recrypt_unpack": "Desempaquetando para cifrado",
+        "status_recrypt_pack": "Aplicando cifrado AES-256",
         "status_vel": "Vel.",
         "status_elapsed": "Transcurrido",
         "status_remaining": "Restante",
@@ -67,7 +72,10 @@ TRANSLATIONS = {
         "info_app_desc": "Gestor y Archivador de Archivos de Alto Rendimiento",
         "info_author": "Desarrollador:",
         "info_tech": "Tecnologías:",
-        "info_license": "Licencia:"
+        "info_license": "Licencia:",
+        "ctx_remove_password": "Quitar contraseña...",
+        "pwd_remove_title": "Quitar Contraseña: {name}",
+        "pwd_remove_success": "✓ Contraseña eliminada con éxito."
     },
     "en": {
         "col_name": "Name",
@@ -87,7 +95,7 @@ TRANSLATIONS = {
         "bm_documents": "Documents",
         "bm_downloads": "Downloads",
         "ctx_compress": "Compress file(s)...",
-        "ctx_extract": "Extract here...",
+        "ctx_extract": "Extract to folder...",
         "ctx_copy": "Copy",
         "ctx_paste": "Paste",
         "ctx_select_all": "Select all",
@@ -110,6 +118,11 @@ TRANSLATIONS = {
         "pwd_active": "Active password configured.",
         "pwd_cleared": "Password cleared.",
         "status_zip_stage": "Processing",
+        "status_tar_stage": "Creating TAR container",
+        "status_zstd_stage": "Compressing with Zstandard",
+        "status_extract_stage": "Extracting files",
+        "status_recrypt_unpack": "Unpacking for encryption",
+        "status_recrypt_pack": "Applying AES-256 encryption",
         "status_vel": "Speed",
         "status_elapsed": "Elapsed",
         "status_remaining": "Remaining",
@@ -131,7 +144,10 @@ TRANSLATIONS = {
         "info_app_desc": "High-Performance File Manager & Archiver",
         "info_author": "Developer:",
         "info_tech": "Technologies:",
-        "info_license": "License:"
+        "info_license": "License:",
+        "ctx_remove_password": "Remove password...",
+        "pwd_remove_title": "Remove Password: {name}",
+        "pwd_remove_success": "✓ Password removed successfully.",
     }
 }
 

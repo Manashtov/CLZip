@@ -9,10 +9,9 @@ import py7zr
 import pyzipper
 import zstandard as zstd
 from pathlib import Path
-from typing import Callable, Optional, List
+from typing import Callable, Optional, List, Dict, Any
 from src.core.exceptions import CompressionError, DecompressionError
 
-# Intentar importar rarfile de forma segura
 try:
     import rarfile
 except ImportError:
@@ -49,6 +48,68 @@ class ZstdEngine:
         return False
 
     @staticmethod
+    def inspect_archive(archive_path: Path, password: str = "") -> List[Dict[str, Any]]:
+        """
+        Inspecciona y previsualiza el contenido de un archivo sin extraerlo.
+        Retorna: [{'name': ..., 'size': ..., 'is_dir': ..., 'mtime': ...}, ...]
+        """
+        archive_path = Path(archive_path)
+        ext = archive_path.suffix.lower()
+        items = []
+
+        if ext == ".zip":
+            pwd_bytes = password.encode("utf-8") if password else None
+            with pyzipper.AESZipFile(str(archive_path), "r") as zf:
+                if pwd_bytes:
+                    zf.setpassword(pwd_bytes)
+                for info in zf.infolist():
+                    items.append({
+                        "name": info.filename.rstrip("/\\"),
+                        "size": info.file_size,
+                        "is_dir": info.is_dir() or info.filename.endswith(("/", "\\")),
+                        "mtime": f"{info.date_time[0]:04d}-{info.date_time[1]:02d}-{info.date_time[2]:02d} {info.date_time[3]:02d}:{info.date_time[4]:02d}"
+                    })
+
+        elif ext == ".7z":
+            with py7zr.SevenZipFile(str(archive_path), mode="r", password=password or None) as sz:
+                for info in sz.list():
+                    items.append({
+                        "name": info.filename.rstrip("/\\"),
+                        "size": info.uncompressed if hasattr(info, 'uncompressed') else 0,
+                        "is_dir": info.is_directory,
+                        "mtime": str(info.creationtime)[:16] if getattr(info, 'creationtime', None) else "-"
+                    })
+
+        elif ext in [".tar", ".gz", ".bz2", ".xz", ".tgz", ".tar.gz", ".tar.bz2", ".tar.xz"]:
+            with tarfile.open(str(archive_path), "r:*") as tf:
+                for member in tf.getmembers():
+                    items.append({
+                        "name": member.name.rstrip("/\\"),
+                        "size": member.size,
+                        "is_dir": member.isdir(),
+                        "mtime": "-"
+                    })
+
+        elif ext in [".zst", ".tzst"]:
+            items.append({
+                "name": archive_path.stem,
+                "size": archive_path.stat().st_size,
+                "is_dir": False,
+                "mtime": "-"
+            })
+
+        return items
+
+    @staticmethod
+    def get_uncompressed_size(archive_path: Path, password: str = "") -> int:
+        """Calcula el tamaño total desempaquetado requerido en disco."""
+        try:
+            items = ZstdEngine.inspect_archive(archive_path, password)
+            return sum(item["size"] for item in items if not item["is_dir"])
+        except Exception:
+            return Path(archive_path).stat().st_size * 2
+
+    @staticmethod
     def compress(
         items: List[Path],
         dest_archive: Path,
@@ -61,12 +122,6 @@ class ZstdEngine:
     ) -> None:
         dest_archive = Path(dest_archive)
         temp_dest = dest_archive.with_suffix(".tmp_archive")
-
-        print(f"\n{'='*50}")
-        print(f"[CRYPTO-LOG] >>> INICIANDO COMPRESIÓN <<<")
-        print(f"[CRYPTO-LOG] Destino: {dest_archive.name}")
-        print(f"[CRYPTO-LOG] Formato: {format_type}")
-        print(f"[CRYPTO-LOG] Contraseña: {'SÍ (Longitud: ' + str(len(password)) + ')' if password else 'NO (Sin cifrado)'}")
 
         try:
             file_list: List[tuple[Path, str]] = []
@@ -85,7 +140,6 @@ class ZstdEngine:
             if total_files == 0:
                 raise CompressionError("No hay archivos válidos para comprimir.")
 
-            # 1. COMPRESIÓN ZIP
             if format_type == "zip":
                 enc = pyzipper.WZ_AES if password else None
                 total_bytes = sum(f[0].stat().st_size for f in file_list) or 1
@@ -98,10 +152,8 @@ class ZstdEngine:
                     encryption=enc
                 ) as zf:
                     if password:
-                        pwd_bytes = password.encode("utf-8")
-                        zf.setpassword(pwd_bytes)
+                        zf.setpassword(password.encode("utf-8"))
                         zf.setencryption(pyzipper.WZ_AES, nbits=256)
-                        print(f"[CRYPTO-LOG] ✓ Cifrado AES-256 habilitado en pyzipper.")
 
                     for fpath, arcname in file_list:
                         if is_cancelled and is_cancelled():
@@ -113,18 +165,11 @@ class ZstdEngine:
                                 bytes_done += len(chunk)
                                 if progress_cb:
                                     progress_cb(bytes_done, total_bytes, "status_zip_stage")
-
-                with pyzipper.AESZipFile(str(temp_dest), "r") as zf_chk:
-                    cifrados = sum(1 for i in zf_chk.infolist() if (i.flag_bits & 0x1))
-                    print(f"[CRYPTO-LOG] Elementos en archivo: {len(zf_chk.infolist())} | Protegidos: {cifrados}")
-
-            # 2. COMPRESIÓN ZSTANDARD
             else:
                 temp_tar = dest_archive.parent / f"~{dest_archive.stem}_temp.tar"
                 total_raw_bytes = sum(f[0].stat().st_size for f in file_list) or 1
                 tar_bytes_written = 0
 
-                print(f"[CRYPTO-LOG] Fase 1: Creando contenedor TAR...")
                 with tarfile.open(temp_tar, "w") as tar:
                     for fpath, arcname in file_list:
                         if is_cancelled and is_cancelled():
@@ -137,8 +182,6 @@ class ZstdEngine:
                             progress_cb(tar_bytes_written, total_raw_bytes * 2, "status_tar_stage")
 
                 tar_size = temp_tar.stat().st_size
-                print(f"[CRYPTO-LOG] Fase 2: Comprimiendo con Zstandard (Nivel {level})...")
-
                 z_read = 0
                 cctx = zstd.ZstdCompressor(level=level, threads=-1)
 
@@ -166,11 +209,7 @@ class ZstdEngine:
                     dest_archive.unlink()
                 temp_dest.rename(dest_archive)
 
-            print(f"[CRYPTO-LOG] ✓ Archivo final creado: {dest_archive.name}")
-            print(f"{'='*50}\n")
-
         except Exception as e:
-            print(f"[CRYPTO-LOG] ❌ ERROR EN COMPRESIÓN: {e}")
             if temp_dest.exists():
                 temp_dest.unlink(missing_ok=True)
             raise CompressionError(f"Error en compresión: {str(e)}") from e
@@ -206,11 +245,6 @@ class ZstdEngine:
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"\n{'='*50}")
-        print(f"[CRYPTO-LOG] >>> INICIANDO DESCOMPRESIÓN <<<")
-        print(f"[CRYPTO-LOG] Archivo: {archive_path.name}")
-        print(f"[CRYPTO-LOG] Clave recibida: {'SÍ (Longitud: ' + str(len(password)) + ')' if password else 'NO (Sin clave)'}")
-
         unified_file = archive_path
         temp_joined = None
         if re.search(r'\.(part\d+|\d{3}|z\d{2})$', archive_path.name.lower()):
@@ -221,7 +255,6 @@ class ZstdEngine:
         try:
             name_lower = unified_file.name.lower()
 
-            # EXTRAER ZIP
             if name_lower.endswith(".zip"):
                 with pyzipper.AESZipFile(str(unified_file), "r") as zf:
                     pwd_bytes = password.encode("utf-8") if password else None
@@ -234,12 +267,10 @@ class ZstdEngine:
                     if encrypted_files:
                         if not pwd_bytes:
                             raise DecompressionError("El archivo requiere una contraseña.")
-
                         try:
                             sample = encrypted_files[0]
                             with zf.open(sample, pwd=pwd_bytes) as test_fp:
                                 test_fp.read(1024)
-                            print("[CRYPTO-LOG] ✓ Clave correcta validada.")
                         except Exception as auth_err:
                             raise DecompressionError("Contraseña incorrecta.") from auth_err
 
@@ -251,7 +282,7 @@ class ZstdEngine:
                             return
 
                         target_path = output_dir / info.filename
-                        if info.is_dir() or info.filename.endswith("/") or info.filename.endswith("\\"):
+                        if info.is_dir() or info.filename.endswith(("/", "\\")):
                             target_path.mkdir(parents=True, exist_ok=True)
                             continue
 
@@ -263,14 +294,12 @@ class ZstdEngine:
                                 if progress_cb:
                                     progress_cb(bytes_extracted, total_bytes, "status_extract_stage")
 
-            # EXTRAER 7Z
             elif name_lower.endswith(".7z"):
                 with py7zr.SevenZipFile(str(unified_file), mode="r", password=password or None) as sz:
                     sz.extractall(path=str(output_dir))
                     if progress_cb:
                         progress_cb(100, 100, "status_extract_stage")
 
-            # EXTRAER RAR
             elif name_lower.endswith(".rar"):
                 if rarfile is None:
                     raise DecompressionError("El módulo 'rarfile' no está instalado. Ejecute: pip install rarfile")
@@ -281,14 +310,16 @@ class ZstdEngine:
                     if progress_cb:
                         progress_cb(100, 100, "status_extract_stage")
 
-            # EXTRAER TAR Y DERIVADOS (.tar, .tar.gz, .tgz, .tar.bz2, .tar.xz)
             elif any(name_lower.endswith(ext) for ext in [".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".gz", ".bz2", ".xz"]):
                 with tarfile.open(str(unified_file), "r:*") as tf:
-                    tf.extractall(str(output_dir))
+                    # Soporte seguro con filtro en Python 3.12+
+                    if hasattr(tarfile, 'data_filter'):
+                        tf.extractall(str(output_dir), filter='data')
+                    else:
+                        tf.extractall(str(output_dir))
                     if progress_cb:
                         progress_cb(100, 100, "status_extract_stage")
 
-            # EXTRAER ZSTANDARD (.zst, .tzst)
             elif name_lower.endswith((".zst", ".tzst")):
                 temp_tar = output_dir / f"extracted_{unified_file.stem}.tar"
                 total_bytes = unified_file.stat().st_size
@@ -307,22 +338,20 @@ class ZstdEngine:
 
                 if tarfile.is_tarfile(temp_tar):
                     with tarfile.open(temp_tar, "r") as tf:
-                        tf.extractall(output_dir)
+                        if hasattr(tarfile, 'data_filter'):
+                            tf.extractall(output_dir, filter='data')
+                        else:
+                            tf.extractall(output_dir)
                     temp_tar.unlink(missing_ok=True)
                 else:
                     final_name = unified_file.name.replace(".zst", "").replace(".tzst", "")
                     temp_tar.rename(output_dir / final_name)
-
             else:
                 raise DecompressionError(f"Formato no soportado: {archive_path.suffix}")
-
-            print(f"[CRYPTO-LOG] ✓ Descompresión finalizada con éxito.")
-            print(f"{'='*50}\n")
 
         except DecompressionError:
             raise
         except Exception as e:
-            print(f"[CRYPTO-LOG] ❌ ERROR: {e}")
             raise DecompressionError(f"Error al descomprimir: {str(e)}") from e
         finally:
             if temp_joined and temp_joined.exists():
@@ -340,10 +369,6 @@ class ZstdEngine:
         archive_path = Path(archive_path)
         temp_dir = Path(tempfile.mkdtemp(prefix="clzip_recrypt_"))
         temp_out = archive_path.parent / f"~{archive_path.stem}_recrypt.tmp"
-
-        print(f"\n{'='*50}")
-        print(f"[CRYPTO-LOG] >>> RE-CIFRANDO ARCHIVO EXISTENTE <<<")
-        print(f"[CRYPTO-LOG] Archivo origen: {archive_path.name}")
 
         try:
             def unwrap_cb(c, t, stage="status_recrypt_unpack"):
@@ -389,14 +414,11 @@ class ZstdEngine:
 
             gc.collect()
             os.replace(str(temp_out), str(archive_path))
-            print(f"[CRYPTO-LOG] ✓ Archivo re-cifrado: {archive_path.name} ({protected_count} protegidos)")
-            print(f"{'='*50}\n")
             return protected_count
 
         except Exception as e:
             if temp_out.exists():
                 temp_out.unlink(missing_ok=True)
-            print(f"[CRYPTO-LOG] ❌ ERROR EN RE-CIFRADO: {e}")
             raise CompressionError(f"Error al aplicar contraseña: {str(e)}") from e
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)

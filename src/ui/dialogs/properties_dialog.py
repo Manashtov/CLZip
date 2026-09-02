@@ -12,7 +12,7 @@ import qtawesome as qta
 from src.utils.helpers import format_bytes
 
 class PropertiesDialog(QDialog):
-    """Ventana de propiedades compacta, estilizada y moderna."""
+    """Ventana de propiedades compacta y multiplataforma."""
     def __init__(self, target_path: Path, parent=None):
         super().__init__(parent)
         self.target_path = Path(target_path).resolve()
@@ -98,7 +98,7 @@ class PropertiesDialog(QDialog):
         mtime = datetime.datetime.fromtimestamp(stat.st_mtime).strftime("%d/%m/%Y %H:%M:%S")
 
         size_human = format_bytes(total_size)
-        size_formatted = f"{size_human} ({total_size:,} bytes)".replace(",", ".")
+        size_formatted = f"{size_human} ({total_size:,} bytes)"
 
         vbox.addLayout(self._build_row("Tipo:", type_str))
         vbox.addLayout(self._build_row("Ubicación:", str(self.target_path.parent)))
@@ -117,12 +117,18 @@ class PropertiesDialog(QDialog):
         chk_readonly = QCheckBox("Solo lectura")
         chk_hidden = QCheckBox("Oculto")
 
+        # Comprobación de atributos multiplataforma
         if sys.platform == "win32":
-            import ctypes
-            attrs = ctypes.windll.kernel32.GetFileAttributesW(str(self.target_path))
-            chk_hidden.setChecked(bool(attrs & 2))
+            try:
+                import ctypes
+                attrs = ctypes.windll.kernel32.GetFileAttributesW(str(self.target_path))
+                chk_hidden.setChecked(bool(attrs & 2))
+                chk_readonly.setChecked(bool(attrs & 1))
+            except Exception:
+                chk_hidden.setChecked(self.target_path.name.startswith("."))
         else:
             chk_hidden.setChecked(self.target_path.name.startswith("."))
+            chk_readonly.setChecked(not os.access(self.target_path, os.W_OK))
 
         attr_layout.addWidget(lbl_attr)
         attr_layout.addWidget(chk_readonly)
@@ -161,10 +167,10 @@ class PropertiesDialog(QDialog):
     def _setup_sharing_tab(self, tab: QWidget):
         vbox = QVBoxLayout(tab)
         vbox.setContentsMargins(12, 12, 12, 12)
-        box = QGroupBox("Recurso en Red")
+        box = QGroupBox("Recurso Compartido")
         vbox_b = QVBoxLayout(box)
-        vbox_b.addWidget(QLabel(f"<b>Ruta de red:</b> \\\\localhost\\{self.target_path.name}"))
-        vbox_b.addWidget(QLabel("Estado: No compartido"))
+        vbox_b.addWidget(QLabel(f"<b>Ruta local:</b> {self.target_path}"))
+        vbox_b.addWidget(QLabel("Estado: No compartido en red local"))
         vbox.addWidget(box)
         vbox.addStretch()
 

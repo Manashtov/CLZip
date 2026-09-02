@@ -1,68 +1,80 @@
+# register_defaults.py
 import sys
 import winreg
 from pathlib import Path
 
-# Extensiones que manejará CLZip
-EXTENSIONS = [".zip", ".zst", ".tzst", ".7z", ".rar", ".tar", ".gz", ".bz2", ".xz"]
+EXTENSIONS = [".zip", ".tar", ".zst", ".tzst", ".7z", ".rar", ".gz", ".bz2", ".xz"]
 
-def register_clzip():
+def register_system_capabilities():
+    if sys.platform != "win32":
+        print("Este script solo aplica a entornos Windows.")
+        return
+
     root_dir = Path(__file__).resolve().parent
-    
-    # Busca si existe el .exe compilado en dist/, o si no, usa el intérprete de Python
-    exe_path = root_dir / "dist" / "CLZip_Portable.exe"
+    exe_path = root_dir / "dist" / "CLZip" / "CLZip.exe"
     icon_path = root_dir / "assets" / "icon.ico"
     
     if exe_path.exists():
         target_command = f'"{exe_path}" "%1"'
-        ico_target = str(icon_path) if icon_path.exists() else str(exe_path)
+        ico_target = f'"{icon_path}",0' if icon_path.exists() else f'"{exe_path}",0'
     else:
-        # Modo desarrollo: usa pythonw.exe para no abrir consola negra
+        # Modo desarrollo
         python_exe = Path(sys.executable).parent / "pythonw.exe"
         if not python_exe.exists():
             python_exe = Path(sys.executable)
         main_py = root_dir / "main.py"
         target_command = f'"{python_exe}" "{main_py}" "%1"'
-        ico_target = str(icon_path) if icon_path.exists() else str(python_exe)
+        ico_target = f'"{icon_path}",0' if icon_path.exists() else f'"{python_exe}",0'
 
     print("=" * 60)
-    print(" >>> ASOCIANDO CLZIP COMO PROGRAMA PREDETERMINADO <<<")
+    print(" >>> REGISTRANDO CLZIP EN EL SISTEMA DE WINDOWS <<<")
     print("=" * 60)
-    print(f"Comando registrado: {target_command}")
 
+    app_key_name = "CLZip.Application"
     prog_id = "CLZip.Archive"
 
     try:
-        # 1. Crear el identificador de programa ProgID
+        # 1. Registrar ProgID con el comando Open
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{prog_id}") as key:
             winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "Archivo comprimido CLZip")
-
-        # 2. Asignar el icono
+        
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{prog_id}\DefaultIcon") as key:
-            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, f'"{ico_target}",0')
+            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, ico_target)
 
-        # 3. Asignar el comando de apertura al hacer doble clic (Open)
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{prog_id}\shell\open\command") as key:
             winreg.SetValueEx(key, "", 0, winreg.REG_SZ, target_command)
 
-        # 4. Asociar cada extensión a CLZip
+        # 2. Registrar Capacidades oficiales (Capabilities)
+        cap_path = rf"Software\Clients\StartMenuInternet\{app_key_name}\Capabilities"
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, cap_path) as key:
+            winreg.SetValueEx(key, "ApplicationName", 0, winreg.REG_SZ, "CLZip")
+            winreg.SetValueEx(key, "ApplicationDescription", 0, winreg.REG_SZ, "Gestor de archivos y compresor de alta velocidad")
+
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"{cap_path}\FileAssociations") as key:
+            for ext in EXTENSIONS:
+                winreg.SetValueEx(key, ext, 0, winreg.REG_SZ, prog_id)
+
+        # 3. Dar de alta en RegisteredApplications
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\RegisteredApplications") as key:
+            winreg.SetValueEx(key, "CLZip", 0, winreg.REG_SZ, rf"Software\Clients\StartMenuInternet\{app_key_name}\Capabilities")
+
+        # 4. Asignar OpenWithProgids para que Windows habilite el botón "Siempre"
         for ext in EXTENSIONS:
-            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{ext}") as key:
-                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, prog_id)
-            print(f"  ✓ Extensión {ext} asociada.")
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{ext}\OpenWithProgids") as key:
+                winreg.SetValueEx(key, prog_id, 0, winreg.REG_NONE, b"")
 
-        # 5. Notificar al Explorador de Windows para que refresque los iconos de inmediato
+        # 5. Notificar al Explorador de Windows
         import ctypes
-        SHCNE_ASSOCCHANGED = 0x08000000
-        SHCNF_IDLIST = 0x0000
-        ctypes.windll.shell32.SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None)
+        ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None)
 
-        print("\n" + "=" * 60)
-        print(" ✓ ¡REGISTRO COMPLETADO CON ÉXITO!")
-        print(" Ahora tus archivos .zip, .zst, .rar, etc., se abrirán con CLZip.")
+        print("✓ Registro completado exitosamente.")
+        print("\nPara fijarlo como predeterminado permanente:")
+        print("1. Clic derecho en cualquier archivo .zip -> 'Abrir con' -> 'Elegir otra aplicación'.")
+        print("2. Selecciona 'CLZip' y marca la casilla 'Usar siempre esta aplicación para abrir archivos .zip'.")
         print("=" * 60)
 
     except Exception as e:
-        print(f"\n❌ Error al registrar en Windows: {e}")
+        print(f"❌ Error al registrar: {e}")
 
 if __name__ == "__main__":
-    register_clzip()
+    register_system_capabilities()

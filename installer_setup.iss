@@ -67,3 +67,22 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilen
 [Run]
 ; Opción para ejecutar la aplicación al terminar el instalador
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
+[Registry]
+; Registra el identificador de programa ProgID
+Root: HKLM; Subkey: "Software\Classes\CLZip.Archive"; ValueType: string; ValueName: ""; ValueData: "Archivo comprimido CLZip"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "Software\Classes\CLZip.Archive\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\assets\icon.ico,0"
+Root: HKLM; Subkey: "Software\Classes\CLZip.Archive\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\CLZip.exe"" ""%1"""
+
+; Registra las capacidades del programa
+Root: HKLM; Subkey: "Software\CLZip\Capabilities"; ValueType: string; ValueName: "ApplicationName"; ValueData: "CLZip"
+Root: HKLM; Subkey: "Software\CLZip\Capabilities"; ValueType: string; ValueName: "ApplicationDescription"; ValueData: "Gestor de archivos CLZip"
+
+; Asocia extensiones a las capacidades
+Root: HKLM; Subkey: "Software\CLZip\Capabilities\FileAssociations"; ValueType: string; ValueName: ".zip"; ValueData: "CLZip.Archive"
+Root: HKLM; Subkey: "Software\CLZip\Capabilities\FileAssociations"; ValueType: string; ValueName: ".tar"; ValueData: "CLZip.Archive"
+Root: HKLM; Subkey: "Software\CLZip\Capabilities\FileAssociations"; ValueType: string; ValueName: ".zst"; ValueData: "CLZip.Archive"
+Root: HKLM; Subkey: "Software\CLZip\Capabilities\FileAssociations"; ValueType: string; ValueName: ".7z"; ValueData: "CLZip.Archive"
+
+; Da de alta formal en RegisteredApplications
+Root: HKLM; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "CLZip"; ValueData: "Software\CLZip\Capabilities"; Flags: uninsdeletevalue

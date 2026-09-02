@@ -2,17 +2,19 @@ import os
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QSettings
-from PyQt6.QtGui import QIcon, QColor, QFont
+from PyQt6.QtGui import QIcon, QFont
 from PyQt6.QtWidgets import (
     QMainWindow,
     QWidget,
     QVBoxLayout,
     QLineEdit,
     QSplitter,
-    QMessageBox
+    QMessageBox,
+    QFileDialog,
+    QInputDialog
 )
 
-from src.utils.helpers import get_app_root
+from src.utils.helpers import get_app_root, check_free_space, format_bytes
 from src.i18n import translator
 from src.i18n.translator import tr
 from src.ui.themes import ThemeManager
@@ -25,11 +27,14 @@ from src.ui.dialogs.compress_dialog import CompressDialog
 from src.ui.worker import CompressionWorker
 from src.core.compressor import ZstdEngine
 
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.root_dir = get_app_root()
         self.settings = QSettings("clzip", "MainWindow")
+        self.shortcut_settings = QSettings("clzip", "Shortcuts")
+        self.worker = None
 
         self._setup_window_icon()
 
@@ -48,7 +53,7 @@ class MainWindow(QMainWindow):
         self._apply_current_theme()
         self.navigate_to(Path.home())
         
-        self.file_browser.setFocus()
+        self.file_browser.tree.setFocus()
 
     def _setup_window_icon(self):
         ico_file = self.root_dir / "assets" / "icon.ico"
@@ -93,12 +98,17 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self):
         self.file_browser.open_directory_requested.connect(self.navigate_to)
+        self.file_browser.path_changed.connect(self.path_bar.setText)
         self.sidebar_panel.path_selected.connect(self.navigate_to)
 
+        # Operaciones del explorador
         self.file_browser.compress_requested.connect(self._start_compress)
         self.file_browser.extract_to_requested.connect(self._start_extract)
+        self.file_browser.password_requested.connect(self._on_password_requested)
+        self.file_browser.remove_password_requested.connect(self._on_remove_password_requested)
 
-        self.toolbar_panel.extract_requested.connect(lambda: self._start_extract(None))
+        # Barra de herramientas
+        self.toolbar_panel.extract_requested.connect(self._on_toolbar_extract)
         self.toolbar_panel.home_requested.connect(lambda: self.navigate_to(Path.home()))
         self.toolbar_panel.up_requested.connect(self._go_up)
         self.toolbar_panel.refresh_requested.connect(self.file_browser.refresh)
@@ -106,53 +116,130 @@ class MainWindow(QMainWindow):
         self.toolbar_panel.lang_toggled.connect(self._toggle_language)
         self.toolbar_panel.settings_requested.connect(self._open_settings)
 
+    def _on_toolbar_extract(self):
+        selected = self.file_browser.get_selected_paths()
+        archive = None
+        if selected and selected[0].lower().endswith(tuple(self.file_browser.ARCHIVE_EXTS)):
+            archive = selected[0]
+        elif self.file_browser.preview_archive_path:
+            archive = str(self.file_browser.preview_archive_path)
+
+        if archive:
+            dest = QFileDialog.getExistingDirectory(self, tr("dlg_extract_select_dest"), str(self.file_browser.current_directory))
+            if dest:
+                self._start_extract(archive, dest)
+
+    def _on_password_requested(self, archive_path: str):
+        arc_p = Path(archive_path)
+        is_enc = ZstdEngine.is_archive_encrypted(arc_p)
+        curr_pwd = ""
+
+        if is_enc:
+            pwd_cur, ok_cur = QInputDialog.getText(
+                self, tr("pwd_current_title"), tr("pwd_current_prompt"), QLineEdit.EchoMode.Password
+            )
+            if not ok_cur:
+                return
+            curr_pwd = pwd_cur
+
+        new_pwd, ok_new = QInputDialog.getText(
+            self, tr("pwd_protect_title", name=arc_p.name), tr("pwd_protect_prompt", name=arc_p.name), QLineEdit.EchoMode.Password
+        )
+        if not ok_new:
+            return
+
+        self._execute_recrypt(arc_p, new_pwd.strip(), curr_pwd)
+
+    def _on_remove_password_requested(self, archive_path: str):
+        arc_p = Path(archive_path)
+        pwd_cur, ok_cur = QInputDialog.getText(
+            self, tr("pwd_remove_title", name=arc_p.name), tr("pwd_current_prompt"), QLineEdit.EchoMode.Password
+        )
+        if not ok_cur or not pwd_cur:
+            return
+
+        self._execute_recrypt(arc_p, "", pwd_cur)
+
+    def _execute_recrypt(self, arc_p: Path, new_password: str, current_password: str):
+        self.worker = CompressionWorker(
+            mode="recrypt",
+            sources=[arc_p],
+            dest=arc_p.parent,
+            password=new_password,
+            current_password=current_password
+        )
+        self.worker.progress_changed.connect(self.status_panel.set_progress)
+        self.worker.operation_finished.connect(lambda el, ct: self._on_operation_finished(el, ct, is_recrypt=True))
+        self.worker.error_occurred.connect(lambda err: QMessageBox.critical(self, "Error", err))
+        self.worker.start()
+
     def _start_compress(self, paths: list):
         if not paths:
             return
         dlg = CompressDialog(len(paths), self)
         if dlg.exec():
-            opts = dlg.get_options() if hasattr(dlg, "get_options") else {}
+            opts = dlg.get_options()
             first_base = os.path.basename(paths[0].rstrip('/\\'))
             fmt = opts.get("format", "zip")
             dest_path = self.file_browser.current_directory / f"{first_base}.{fmt}"
 
-            if CompressionWorker:
-                self.worker = CompressionWorker(
-                    mode="compress",
-                    sources=paths,
-                    dest=str(dest_path),
-                    level=opts.get("level", 3),
-                    password=opts.get("password"),
-                    format_type=fmt,
-                )
-                self.worker.start()
-            else:
-                engine = ZstdEngine()
-                engine.compress(paths[0] if len(paths) == 1 else paths, str(dest_path), password=opts.get("password"))
-                self.file_browser.refresh()
+            self.worker = CompressionWorker(
+                mode="compress",
+                sources=[Path(p) for p in paths],
+                dest=Path(dest_path),
+                level=opts.get("level", 3),
+                split_mb=opts.get("split_mb", 0),
+                password=opts.get("password", ""),
+                format_type=fmt
+            )
+            self.worker.progress_changed.connect(self.status_panel.set_progress)
+            self.worker.operation_finished.connect(lambda el, ct: self._on_operation_finished(el, ct))
+            self.worker.error_occurred.connect(lambda err: QMessageBox.critical(self, "Error", err))
+            self.worker.start()
 
-    def _start_extract(self, archive_path: str = None, dest_dir: str = None):
-        if not archive_path:
-            paths = self.file_browser.get_selected_paths()
-            if paths and paths[0].lower().endswith(('.zip', '.tar', '.zst', '.tar.zst')):
-                archive_path = paths[0]
-            else:
+    def _start_extract(self, archive_path: str, dest_dir: str):
+        if not archive_path or not dest_dir:
+            return
+
+        out_path = Path(dest_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+
+        pwd = ""
+        if ZstdEngine.is_archive_encrypted(Path(archive_path)):
+            pwd, ok = QInputDialog.getText(
+                self, tr("pwd_current_title"), tr("pwd_current_prompt"), QLineEdit.EchoMode.Password
+            )
+            if not ok:
                 return
 
-        if not dest_dir:
-            dest_dir = os.path.splitext(archive_path)[0]
-            if dest_dir.endswith('.tar'):
-                dest_dir = os.path.splitext(dest_dir)[0]
-        
-        os.makedirs(dest_dir, exist_ok=True)
+        # Comprobación previa de espacio libre en disco
+        required_size = ZstdEngine.get_uncompressed_size(Path(archive_path), pwd)
+        has_space, free_bytes, req_bytes = check_free_space(out_path, required_size)
 
-        try:
-            engine = ZstdEngine()
-            engine.extract(archive_path, dest_dir)
-            QMessageBox.information(self, "Éxito", f"Contenido extraído en:\n{dest_dir}")
-            self.file_browser.refresh()
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Fallo al extraer:\n{str(e)}")
+        if not has_space:
+            QMessageBox.critical(
+                self,
+                "Espacio insuficiente",
+                f"No hay suficiente espacio en disco para extraer el archivo.\n\n"
+                f"Espacio necesario: {format_bytes(req_bytes)}\n"
+                f"Espacio disponible: {format_bytes(free_bytes)}"
+            )
+            return
+
+        self.worker = CompressionWorker(
+            mode="decompress",
+            sources=[Path(archive_path)],
+            dest=out_path,
+            password=pwd
+        )
+        self.worker.progress_changed.connect(self.status_panel.set_progress)
+        self.worker.operation_finished.connect(lambda el, ct: self._on_operation_finished(el, ct))
+        self.worker.error_occurred.connect(lambda err: QMessageBox.critical(self, "Error", err))
+        self.worker.start()
+
+    def _on_operation_finished(self, elapsed: float, affected_count: int, is_recrypt: bool = False):
+        self.status_panel.set_completed(elapsed, affected_count, is_recrypt=is_recrypt)
+        self.file_browser.refresh()
 
     def navigate_to(self, path: Path):
         p = Path(path).resolve()
@@ -164,6 +251,10 @@ class MainWindow(QMainWindow):
             self._silent_message("Error", f"No se puede acceder a la ruta especificada:\n{p}")
 
     def _go_up(self):
+        if self.file_browser.preview_archive_path:
+            self.file_browser.populate(self.file_browser.current_directory)
+            return
+
         current = self.file_browser.current_directory
         parent = current.parent
         if parent and parent != current:
@@ -173,7 +264,7 @@ class MainWindow(QMainWindow):
         target = Path(self.path_bar.text().strip())
         if target.exists() and target.is_dir():
             self.navigate_to(target)
-            self.file_browser.setFocus()
+            self.file_browser.tree.setFocus()
         else:
             self._silent_message("Ruta Inválida", f"La ruta no existe o no es una carpeta válida:\n{target}")
             self.path_bar.setText(str(self.file_browser.current_directory))
@@ -184,130 +275,12 @@ class MainWindow(QMainWindow):
         self._apply_current_theme()
 
     def _apply_current_theme(self):
-        try:
-            primary_color = ThemeManager.get_primary_color(self.current_palette)
-        except TypeError:
-            primary_color = ThemeManager.get_primary_color()
-
-        c = QColor(primary_color)
-        hover_bg = f"rgba({c.red()}, {c.green()}, {c.blue()}, 0.18)"
-        selected_bg = f"rgba({c.red()}, {c.green()}, {c.blue()}, 0.32)"
-
-        if self.dark_mode:
-            bg_pane = "#181825"
-            bg_alt = "#1e1e2e"
-            text_main = "#cdd6f4"
-            text_dim = "#a6adc8"
-            border = "#313244"
-            scroll_bg = "#45475a"
-        else:
-            bg_pane = "#eff1f5"
-            bg_alt = "#ffffff"
-            text_main = "#4c4f69"
-            text_dim = "#6c6f85"
-            border = "#ccd0da"
-            scroll_bg = "#cfd4df"
-
-        self.setStyleSheet(f"""
-            QMainWindow, QWidget {{
-                background-color: {bg_pane};
-                color: {text_main};
-                font-family: 'Segoe UI', sans-serif;
-            }}
-            QToolBar {{
-                background-color: {bg_alt};
-                border-bottom: 1px solid {border};
-                spacing: 4px;
-                padding: 2px;
-            }}
-            QToolButton {{
-                background-color: transparent;
-                border-radius: 4px;
-                padding: 5px;
-                color: {text_main};
-            }}
-            QToolButton:hover {{
-                background-color: {hover_bg};
-                border: 1px solid {primary_color};
-            }}
-            QLineEdit {{
-                background-color: {bg_alt};
-                border: 1px solid {border};
-                border-radius: 4px;
-                padding: 4px 8px;
-                color: {text_main};
-                font-size: 13px;
-            }}
-            QLineEdit:focus {{
-                border: 1px solid {primary_color};
-            }}
-            QTreeWidget, QListWidget {{
-                background-color: {bg_alt};
-                border: 1px solid {border};
-                border-radius: 4px;
-                alternate-background-color: {bg_pane};
-                color: {text_main};
-                outline: none;
-            }}
-            QTreeWidget::item:hover, QListWidget::item:hover {{
-                background-color: {hover_bg};
-                color: {text_main};
-            }}
-            QTreeWidget::item:selected, QListWidget::item:selected {{
-                background-color: {selected_bg};
-                color: {text_main};
-                border-left: 2px solid {primary_color};
-            }}
-            QHeaderView::section {{
-                background-color: {bg_pane};
-                color: {text_dim};
-                padding: 4px;
-                border: none;
-                border-bottom: 1px solid {border};
-            }}
-            QSplitter::handle {{
-                background-color: {border};
-            }}
-            QScrollBar:vertical {{
-                border: none;
-                background-color: transparent;
-                width: 12px;
-                margin: 4px;
-            }}
-            QScrollBar::handle:vertical {{
-                background-color: {scroll_bg};
-                min-height: 30px;
-                border-radius: 6px;
-            }}
-            QScrollBar::handle:vertical:hover {{
-                background-color: {primary_color};
-            }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
-                height: 0px; background: none;
-            }}
-            QScrollBar:horizontal {{
-                border: none;
-                background-color: transparent;
-                height: 12px;
-                margin: 4px;
-            }}
-            QScrollBar::handle:horizontal {{
-                background-color: {scroll_bg};
-                min-width: 30px;
-                border-radius: 6px;
-            }}
-            QScrollBar::handle:horizontal:hover {{
-                background-color: {primary_color};
-            }}
-            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
-            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
-                width: 0px; background: none;
-            }}
-        """)
-
+        sheet = ThemeManager.get_theme(self.dark_mode, self.current_palette)
+        self.setStyleSheet(sheet)
         self.toolbar_panel.update_theme_icons(self.dark_mode, self.current_palette)
-        self.sidebar_panel.populate_bookmarks(primary_color)
+        
+        pri = ThemeManager.get_primary_color(self.current_palette)
+        self.sidebar_panel.populate_bookmarks(pri)
 
     def _toggle_language(self):
         cur = translator.get_locale()
@@ -317,10 +290,7 @@ class MainWindow(QMainWindow):
         self.toolbar_panel.retranslate_ui()
         self.file_browser.retranslate_ui()
 
-        try:
-            pri = ThemeManager.get_primary_color(self.current_palette)
-        except TypeError:
-            pri = ThemeManager.get_primary_color()
+        pri = ThemeManager.get_primary_color(self.current_palette)
         self.sidebar_panel.populate_bookmarks(pri)
         self.file_browser.refresh()
 
@@ -332,6 +302,7 @@ class MainWindow(QMainWindow):
     def _sync_settings(self):
         self.current_palette = self.settings.value("palette", self.current_palette, type=str)
         self._apply_current_theme()
+        self.file_browser.update_action_shortcuts()
         self.file_browser.populate(self.file_browser.current_directory)
 
     def _silent_message(self, title: str, text: str):

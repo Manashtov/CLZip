@@ -39,3 +39,5 @@ if ($iscc) {
 } else {
     Write-Host "`nNo se encontró ISCC.exe. Abre 'installer_setup.iss' manualmente en Inno Setup Compiler para generar el instalador." -ForegroundColor Yellow
 }
+
+# .\build_installer.ps1 para que funcione

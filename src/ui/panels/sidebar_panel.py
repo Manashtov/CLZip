@@ -1,6 +1,5 @@
 import os
-import string
-import ctypes
+import sys
 from pathlib import Path
 from PyQt6.QtWidgets import QListWidget, QListWidgetItem
 from PyQt6.QtCore import pyqtSignal, Qt, QSize
@@ -24,7 +23,6 @@ class SidebarPanel(QListWidget):
 
         self.clear()
         
-        # Marcadores estándar que sincronizan su color con la paleta activa
         bookmarks = [
             (tr("bm_home"), Path.home(), qta.icon("fa5s.user", color=palette_color)),
             (tr("bm_desktop"), Path.home() / "Desktop", qta.icon("fa5s.desktop", color=palette_color)),
@@ -32,16 +30,30 @@ class SidebarPanel(QListWidget):
             (tr("bm_downloads"), Path.home() / "Downloads", qta.icon("fa5s.download", color=palette_color)),
         ]
 
-        # Detección de unidades de disco en Windows
-        if os.name == "nt":
-            drives = []
+        # Detección multiplataforma de unidades y raíces de sistema
+        if sys.platform == "win32":
+            import ctypes
+            import string
             bitmask = ctypes.windll.kernel32.GetLogicalDrives()
             for letter in string.ascii_uppercase:
                 if bitmask & 1:
-                    drives.append(f"{letter}:\\")
+                    d = f"{letter}:\\"
+                    bookmarks.append((f"({letter}:)", Path(d), qta.icon("fa5s.hdd", color=palette_color)))
                 bitmask >>= 1
-            for d in drives:
-                bookmarks.append((f"({d[:2]})", Path(d), qta.icon("fa5s.hdd", color=palette_color)))
+        elif sys.platform.startswith("linux"):
+            bookmarks.append(("/ (Raíz)", Path("/"), qta.icon("fa5s.hdd", color=palette_color)))
+            media = Path("/media") / Path.home().name
+            if media.exists():
+                for m in media.iterdir():
+                    if m.is_dir():
+                        bookmarks.append((m.name[:10], m, qta.icon("fa5s.hdd", color=palette_color)))
+        elif sys.platform == "darwin":
+            bookmarks.append(("Macintosh HD", Path("/"), qta.icon("fa5s.hdd", color=palette_color)))
+            volumes = Path("/Volumes")
+            if volumes.exists():
+                for v in volumes.iterdir():
+                    if v.is_dir() and v.name != "Macintosh HD":
+                        bookmarks.append((v.name[:10], v, qta.icon("fa5s.hdd", color=palette_color)))
 
         for name, path, icon in bookmarks:
             if path.exists():
