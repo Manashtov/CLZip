@@ -4,6 +4,11 @@ Un gestor y compresor de archivos moderno, intuitivo y de alto rendimiento dise�
 
 CLZip ofrece una interfaz gráfica limpia y accesible, soporte para múltiples formatos de compresión (ZIP, TAR, Zstandard), cifrado seguro AES-256 mediante contraseña, y personalización completa de temas (claro/oscuro).
 
+
+Link instalación
+https://github.com/Manashtov/CLZip/releases/tag/1.0
+
+
 ---
 
 ## 🚀 Características Principales
@@ -64,6 +69,9 @@ Desarrollado por Manashtov.
 
 
 CLZip 🗜️ (English)
+
+Link Release:
+https://github.com/Manashtov/CLZip/releases/tag/1.0
 
 A modern, intuitive, and high-performance archive manager and compression utility designed for Windows, built with Python and PyQt6.
 
