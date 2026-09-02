@@ -1,0 +1,47 @@
+clzip/
+│
+├── assets/                       # Recursos visuales (iconos de la aplicación en .ico y .png)
+│   ├── icon.ico                  # Icono principal de Windows para la barra de tareas y el ejecutable
+│   └── icon_256.png              # Icono en alta resolución para accesos directos y ventanas
+│
+├── locales/                      # Archivos de internacionalización y traducciones
+│   ├── en.json                   # Diccionario de cadenas en inglés
+│   └── es.json                   # Diccionario de cadenas en español
+│
+├── src/                          # Código fuente modular de la aplicación
+│   ├── core/                     # Lógica interna y motores de compresión/descompresión
+│   │   ├── __init__.py           # Inicializador de módulo Python
+│   │   └── zstd_engine.py        # Motor de compresión/descompresión (ZIP, TAR, Zstandard y pyzipper AES-256)
+│   │
+│   ├── ui/                       # Capa visual e interfaz gráfica en PyQt6
+│   │   ├── dialogs/              # Ventanas emergentes y cuadros de diálogo
+│   │   │   ├── __init__.py       # Inicializador de módulo Python
+│   │   │   ├── password_dialog.py # Diálogo para ingresar o asignar contraseña a los archivos
+│   │   │   ├── progress_dialog.py # Barra y diálogo de progreso para compresión/extracción
+│   │   │   └── settings_dialog.py # Ventana de configuración (tema claro/oscuro, paletas, idioma)
+│   │   │
+│   │   ├── panels/               # Componentes y paneles reutilizables de la ventana
+│   │   │   ├── __init__.py       # Inicializador de módulo Python
+│   │   │   ├── file_browser_panel.py # Vista de lista y árbol de archivos del sistema y contenedores
+│   │   │   └── sidebar_panel.py  # Barra lateral con accesos rápidos a carpetas comunes
+│   │   │
+│   │   ├── styles/               # Gestión de diseño, temas y hojas de estilo Qt (QSS)
+│   │   │   ├── __init__.py       # Inicializador de módulo Python
+│   │   │   └── theme_manager.py  # Generador de temas oscuro/claro y definición de colores de acento
+│   │   │
+│   │   ├── __init__.py           # Inicializador de módulo Python
+│   │   └── main_window.py        # Ventana principal, barra de herramientas, menús y conexión de paneles
+│   │
+│   └── utils/                    # Funciones auxiliares y herramientas de soporte
+│       ├── __init__.py           # Inicializador de módulo Python
+│       ├── helpers.py            # Rutas relativas seguras (get_app_root) para desarrollo y PyInstaller
+│       └── i18n.py               # Cargador y gestor de idioma activo (traductor tr())
+│
+├── .gitignore                    # Reglas de exclusión para no subir temporales, cachés ni ejecutables a Git
+├── build_clean_dist.py           # Script auxiliar en Python para limpieza y precompilación local
+├── build_installer.ps1           # Script PowerShell que automatiza: limpieza, PyInstaller e Inno Setup
+├── CLZip.spec                    # Configuración de compilación para PyInstaller (rutas, assets y dependencias)
+├── installer_setup.iss           # Script de Inno Setup para compilar el instalador final (.exe)
+├── main.py                       # Punto de entrada de la aplicación (arranque de QApplication y MainWindow)
+├── README.md                     # Documentación principal, características e instrucciones del repositorio
+└── requirements.txt              # Lista de dependencias de Python necesarias (PyQt6, pyzipper, qtawesome, etc.)
