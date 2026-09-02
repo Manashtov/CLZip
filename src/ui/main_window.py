@@ -1,4 +1,4 @@
-import sys
+import os
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QSettings
@@ -21,7 +21,9 @@ from src.ui.panels.sidebar_panel import SidebarPanel
 from src.ui.panels.toolbar_panel import ToolBarPanel
 from src.ui.panels.status_panel import StatusPanel
 from src.ui.dialogs.settings_dialog import SettingsDialog
-
+from src.ui.dialogs.compress_dialog import CompressDialog
+from src.ui.worker import CompressionWorker
+from src.core.compressor import ZstdEngine
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -93,13 +95,64 @@ class MainWindow(QMainWindow):
         self.file_browser.open_directory_requested.connect(self.navigate_to)
         self.sidebar_panel.path_selected.connect(self.navigate_to)
 
-        self.toolbar_panel.extract_requested.connect(self.file_browser.extract_requested.emit)
+        self.file_browser.compress_requested.connect(self._start_compress)
+        self.file_browser.extract_to_requested.connect(self._start_extract)
+
+        self.toolbar_panel.extract_requested.connect(lambda: self._start_extract(None))
         self.toolbar_panel.home_requested.connect(lambda: self.navigate_to(Path.home()))
         self.toolbar_panel.up_requested.connect(self._go_up)
         self.toolbar_panel.refresh_requested.connect(self.file_browser.refresh)
         self.toolbar_panel.theme_toggled.connect(self._toggle_theme)
         self.toolbar_panel.lang_toggled.connect(self._toggle_language)
         self.toolbar_panel.settings_requested.connect(self._open_settings)
+
+    def _start_compress(self, paths: list):
+        if not paths:
+            return
+        dlg = CompressDialog(len(paths), self)
+        if dlg.exec():
+            opts = dlg.get_options() if hasattr(dlg, "get_options") else {}
+            first_base = os.path.basename(paths[0].rstrip('/\\'))
+            fmt = opts.get("format", "zip")
+            dest_path = self.file_browser.current_directory / f"{first_base}.{fmt}"
+
+            if CompressionWorker:
+                self.worker = CompressionWorker(
+                    mode="compress",
+                    sources=paths,
+                    dest=str(dest_path),
+                    level=opts.get("level", 3),
+                    password=opts.get("password"),
+                    format_type=fmt,
+                )
+                self.worker.start()
+            else:
+                engine = ZstdEngine()
+                engine.compress(paths[0] if len(paths) == 1 else paths, str(dest_path), password=opts.get("password"))
+                self.file_browser.refresh()
+
+    def _start_extract(self, archive_path: str = None, dest_dir: str = None):
+        if not archive_path:
+            paths = self.file_browser.get_selected_paths()
+            if paths and paths[0].lower().endswith(('.zip', '.tar', '.zst', '.tar.zst')):
+                archive_path = paths[0]
+            else:
+                return
+
+        if not dest_dir:
+            dest_dir = os.path.splitext(archive_path)[0]
+            if dest_dir.endswith('.tar'):
+                dest_dir = os.path.splitext(dest_dir)[0]
+        
+        os.makedirs(dest_dir, exist_ok=True)
+
+        try:
+            engine = ZstdEngine()
+            engine.extract(archive_path, dest_dir)
+            QMessageBox.information(self, "Éxito", f"Contenido extraído en:\n{dest_dir}")
+            self.file_browser.refresh()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Fallo al extraer:\n{str(e)}")
 
     def navigate_to(self, path: Path):
         p = Path(path).resolve()
@@ -215,7 +268,6 @@ class MainWindow(QMainWindow):
             QSplitter::handle {{
                 background-color: {border};
             }}
-            
             QScrollBar:vertical {{
                 border: none;
                 background-color: transparent;
@@ -234,7 +286,6 @@ class MainWindow(QMainWindow):
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
                 height: 0px; background: none;
             }}
-            
             QScrollBar:horizontal {{
                 border: none;
                 background-color: transparent;
@@ -279,14 +330,8 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _sync_settings(self):
-        """Aplica la nueva paleta en vivo mientras la ventana de configuración sigue abierta."""
-        # 1. Obtener la nueva paleta guardada
         self.current_palette = self.settings.value("palette", self.current_palette, type=str)
-        
-        # 2. Re-aplicar estilos QSS e íconos de toolbar/sidebar
         self._apply_current_theme()
-        
-        # 3. Forzar al explorador de archivos a regenerar todos los íconos con la nueva paleta
         self.file_browser.populate(self.file_browser.current_directory)
 
     def _silent_message(self, title: str, text: str):

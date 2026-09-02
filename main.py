@@ -11,6 +11,7 @@ from src.ui.main_window import MainWindow
 from src.utils.helpers import get_app_root
 
 
+
 def qt_message_filter(mode, context, message):
     # Suprime el mensaje interno de punto <= 0 generado por cálculos en estilos QSS
     if "setPointSize" in message or "Point size <= 0" in message:

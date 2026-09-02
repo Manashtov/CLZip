@@ -17,7 +17,7 @@
   "col_type": "Type",
   "col_modified": "Modified",
   "ctx_compress": "Compress...",
-  "ctx_extract": "Extract here",
+  "ctx_extract": "Extract",
   "ctx_copy": "Copy",
   "ctx_paste": "Paste",
   "ctx_select_all": "Select all",

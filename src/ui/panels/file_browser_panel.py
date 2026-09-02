@@ -1,384 +1,314 @@
 import os
-import sys
 import shutil
-import subprocess
-import datetime
 from pathlib import Path
 from PyQt6.QtWidgets import (
-    QTreeWidget, QTreeWidgetItem, QMenu, QMessageBox, 
-    QInputDialog, QLineEdit, QDialog, QVBoxLayout, QLabel, QPushButton, QApplication
+    QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem, QMenu, QMessageBox, 
+    QDialog, QLabel, QFormLayout, QDialogButtonBox, QHeaderView, QFileDialog
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QPoint, QSettings, QMimeData, QUrl
-from PyQt6.QtGui import QCursor, QDragEnterEvent, QDropEvent, QKeyEvent, QKeySequence
+from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtCore import Qt, QSettings, QFileInfo, pyqtSignal
 import qtawesome as qta
 
-
-from src.core.compressor import ZstdEngine
 from src.i18n.translator import tr
-from src.ui.dialogs.properties_dialog import PropertiesDialog
-from src.ui.dialogs.checksum_dialog import ChecksumDialog
-from src.ui.dialogs.settings_dialog import DEFAULT_SHORTCUTS
-from src.utils.helpers import format_bytes, move_to_trash
+from src.core.compressor import ZstdEngine
 from src.ui.themes import ThemeManager
 
 
-ARCHIVE_EXTS = {
-    ".zip", ".7z", ".rar", ".zst", ".tzst", 
-    ".tar", ".gz", ".tgz", ".bz2", ".tbz2", ".xz", ".txz", 
-    ".part001", ".001"
-}
+class PropertiesDialog(QDialog):
+    """Muestra los metadatos y atributos detallados del archivo o carpeta seleccionado."""
+    def __init__(self, path: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"{tr('Propiedades de:')} {os.path.basename(path)}")
+        self.setMinimumWidth(400)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        
+        info = QFileInfo(path)
+        is_dir = info.isDir()
+        
+        size_bytes = info.size()
+        if is_dir:
+            size_str = tr("Carpeta de archivos")
+        else:
+            if size_bytes < 1024:
+                size_str = f"{size_bytes} B"
+            elif size_bytes < 1024 * 1024:
+                size_str = f"{size_bytes / 1024:.2f} KB ({size_bytes:,} bytes)"
+            else:
+                size_str = f"{size_bytes / (1024 * 1024):.2f} MB ({size_bytes:,} bytes)"
+        
+        created = info.birthTime().toString("yyyy-MM-dd HH:mm:ss") if hasattr(info, 'birthTime') else "-"
+        modified = info.lastModified().toString("yyyy-MM-dd HH:mm:ss")
+        accessed = info.lastRead().toString("yyyy-MM-dd HH:mm:ss")
+        
+        form.addRow(QLabel(f"<b>{tr('Nombre:')}</b>"), QLabel(info.fileName()))
+        form.addRow(QLabel(f"<b>{tr('Tipo:')}</b>"), QLabel(tr("Carpeta") if is_dir else (f".{info.suffix().upper()}" if info.suffix() else tr("Archivo"))))
+        form.addRow(QLabel(f"<b>{tr('Ubicación:')}</b>"), QLabel(info.absolutePath()))
+        form.addRow(QLabel(f"<b>{tr('Tamaño:')}</b>"), QLabel(size_str))
+        form.addRow(QLabel(f"<b>{tr('Creado:')}</b>"), QLabel(created))
+        form.addRow(QLabel(f"<b>{tr('Modificado:')}</b>"), QLabel(modified))
+        form.addRow(QLabel(f"<b>{tr('Último acceso:')}</b>"), QLabel(accessed))
+        
+        layout.addLayout(form)
+        
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        btn_box.accepted.connect(self.accept)
+        layout.addWidget(btn_box)
 
-class FileBrowserPanel(QTreeWidget):
+
+class FileBrowserPanel(QWidget):
+    """Panel de exploración basado en QTreeWidget con diseño limpio, hover e iconos temáticos."""
     open_directory_requested = pyqtSignal(Path)
-    compress_requested = pyqtSignal()
-    extract_requested = pyqtSignal()
-    items_dropped = pyqtSignal(list)
-    password_changed = pyqtSignal(str)
-    recrypt_requested = pyqtSignal(Path, str, str)
+    compress_requested = pyqtSignal(list)
+    extract_to_requested = pyqtSignal(str, str)
+    path_changed = pyqtSignal(str)
+    file_selected = pyqtSignal(str)
+
+    ARCHIVE_EXTS = {'.zip', '.tar', '.zst', '.tar.zst'}
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.current_directory: Path = Path.home()
+        self.current_directory = Path.home()
+        self.history = []
+        self.history_index = -1
         self.settings = QSettings("clzip", "FileBrowser")
-        self.shortcut_settings = QSettings("clzip", "Shortcuts")
-        self._clipboard_paths: list[Path] = []
         
-        self.setAcceptDrops(True)
-        self.setRootIsDecorated(False)
-        self.setAlternatingRowColors(True)
-        self.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
-        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._setup_ui()
+
+    def _setup_ui(self):
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
         
-        self.customContextMenuRequested.connect(self._show_context_menu)
-        self.itemDoubleClicked.connect(self._on_double_click)
-        self.header().sectionResized.connect(self._save_column_widths)
+        self.tree = QTreeWidget(self)
+        self.tree.setRootIsDecorated(False)
+        self.tree.setAlternatingRowColors(True)
+        self.tree.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.setMouseTracking(True)
         
-        self.retranslate_ui()
+        self.tree.setHeaderLabels([tr("Name"), tr("Size"), tr("Type"), tr("Date Modified")])
+        
+        header = self.tree.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.sectionResized.connect(self._save_column_widths)
+        
+        self.tree.doubleClicked.connect(self._on_double_clicked)
+        self.tree.customContextMenuRequested.connect(self.show_context_menu)
+        
+        main_layout.addWidget(self.tree)
         self._restore_column_widths()
 
-    def get_shortcut(self, action_key: str) -> QKeySequence:
-        val = self.shortcut_settings.value(action_key, DEFAULT_SHORTCUTS.get(action_key, ""))
-        return QKeySequence(val)
-
-    def retranslate_ui(self):
-        state = self.header().saveState()
-        self.setHeaderLabels([
-            tr("col_name"),
-            tr("col_size"),
-            tr("col_type"),
-            tr("col_modified")
-        ])
-        self.header().restoreState(state)
-
-    def _save_column_widths(self, logicalIndex, oldSize, newSize):
-        self.settings.setValue("header_state", self.header().saveState())
-
-    def _restore_column_widths(self):
-        state = self.settings.value("header_state")
-        if state:
-            self.header().restoreState(state)
-        else:
-            self.header().resizeSection(0, 220)
-            self.header().resizeSection(1, 90)
-            self.header().resizeSection(2, 110)
-            self.header().resizeSection(3, 130)
-
-    def dragEnterEvent(self, event: QDragEnterEvent):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-
-    def dropEvent(self, event: QDropEvent):
-        paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.toLocalFile()]
-        if paths:
-            self.items_dropped.emit(paths)
-
-    def keyPressEvent(self, event: QKeyEvent):
-        key_comb = QKeySequence(event.keyCombination().toCombined())
-
-        if key_comb == self.get_shortcut("properties"):
-            self._show_properties()
-            event.accept()
+    def populate(self, path: Path, record_history: bool = True):
+        p = Path(path).resolve()
+        if not p.exists() or not p.is_dir():
             return
-        elif key_comb == self.get_shortcut("copy"):
-            self.copy_selected()
-            event.accept()
-            return
-        elif key_comb == self.get_shortcut("paste"):
-            self.paste_items()
-            event.accept()
-            return
-        elif key_comb == self.get_shortcut("extract"):
-            self.extract_requested.emit()
-            event.accept()
-            return
-        elif key_comb == self.get_shortcut("select_all"):
-            self.selectAll()
-            event.accept()
-            return
-        elif key_comb == self.get_shortcut("delete"):
-            self._delete_selected()
-            event.accept()
-            return
-        elif key_comb == self.get_shortcut("compress"):
-            self.compress_requested.emit()
-            event.accept()
-            return
-        elif key_comb == self.get_shortcut("set_password"):
-            self._change_password_dialog()
-            event.accept()
-            return
-
-        super().keyPressEvent(event)
-
-    def refresh(self):
-        self.populate(self.current_directory)
-
-    def populate(self, directory: Path):
-        self.current_directory = Path(directory).resolve()
-        self.clear()
+            
+        self.current_directory = p
+        self.tree.clear()
         
-        try:
-            entries = list(self.current_directory.iterdir())
-        except Exception as e:
-            QMessageBox.warning(self, "Error", tr("err_access_folder", error=str(e)))
-            return
+        mw_settings = QSettings("clzip", "MainWindow")
+        pal_name = mw_settings.value("palette", "Verde", type=str)
+        pri_color = ThemeManager.get_primary_color(pal_name)
 
-        entries.sort(key=lambda x: (not x.is_dir(), x.name.lower()))
+        try:
+            entries = sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+        except PermissionError:
+            return
 
         for entry in entries:
-            is_dir = entry.is_dir()
-            ext = entry.suffix.lower()
-
-            if is_dir:
-                icon = qta.icon("fa5s.folder", color="#f9e2af")
-                type_str = "Folder" if tr("col_name") == "Name" else "Carpeta"
-                size_str = ""
-            elif ext in ARCHIVE_EXTS:
-                is_encrypted = ZstdEngine.is_archive_encrypted(entry)
-
-                if is_encrypted:
-                    icon = qta.icon("fa5s.lock", color="#e5a93b")
-                    type_str = "ZIP (Password)" if tr("col_name") == "Name" else "ZIP (Protegido)"
-                else:
-                    # Leer la paleta activa configurada en la aplicación
-                    mw_settings = QSettings("clzip", "MainWindow")
-                    pal_name = mw_settings.value("palette", "Verde", type=str)
-                    pri_color = ThemeManager.get_primary_color(pal_name)
+            try:
+                is_dir = entry.is_dir()
+                ext = entry.suffix.lower()
+                
+                if is_dir:
+                    icon = qta.icon("fa5s.folder", color="#f9e2af")
+                    type_str = tr("Carpeta")
+                    size_str = ""
+                elif ext in self.ARCHIVE_EXTS:
+                    if ZstdEngine.is_archive_encrypted(str(entry)):
+                        icon = qta.icon("fa5s.lock", color="#e5a93b")
+                        type_str = "ZIP (Protegido)"
+                    else:
+                        icon = qta.icon("fa5s.file-archive", color=pri_color)
+                        type_str = "Compressed Archive File"
                     
-                    icon = qta.icon("fa5s.file-archive", color=pri_color)
-                    type_str = f"{ext.upper()[1:]} Archive"
-
-                try:
-                    size_str = format_bytes(entry.stat().st_size)
-                except OSError:
-                    size_str = "N/A"
-            else:
-                icon = qta.icon("fa5s.file", color="#a6adc8")
-                type_str = ext[1:].upper() if ext else "File"
-                try:
-                    size_str = format_bytes(entry.stat().st_size)
-                except OSError:
-                    size_str = "N/A"
-
-            try:
-                mtime = datetime.datetime.fromtimestamp(entry.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-            except OSError:
-                mtime = "N/A"
-
-            item = QTreeWidgetItem([entry.name, size_str, type_str, mtime])
-            item.setIcon(0, icon)
-            item.setData(0, Qt.ItemDataRole.UserRole, str(entry))
-            self.addTopLevelItem(item)
-
-    def get_selected_paths(self) -> list[Path]:
-        return [Path(item.data(0, Qt.ItemDataRole.UserRole)) for item in self.selectedItems()]
-
-    def _on_double_click(self, item: QTreeWidgetItem, col: int):
-        p = Path(item.data(0, Qt.ItemDataRole.UserRole))
-        if p.is_dir():
-            self.open_directory_requested.emit(p)
-        elif p.suffix.lower() in ARCHIVE_EXTS:
-            self.extract_requested.emit()
-
-    def copy_selected(self):
-        sel = self.get_selected_paths()
-        if not sel:
-            return
-        self._clipboard_paths = sel
-        clipboard = QApplication.clipboard()
-        mime = QMimeData()
-        mime.setUrls([QUrl.fromLocalFile(str(p)) for p in sel])
-        clipboard.setMimeData(mime)
-
-    def paste_items(self):
-        clipboard = QApplication.clipboard()
-        mime = clipboard.mimeData()
-        paths_to_paste = []
-
-        if mime and mime.hasUrls():
-            paths_to_paste = [Path(u.toLocalFile()) for u in mime.urls() if u.toLocalFile()]
-        elif self._clipboard_paths:
-            paths_to_paste = self._clipboard_paths
-
-        if not paths_to_paste:
-            return
-
-        for src in paths_to_paste:
-            if not src.exists():
-                continue
-            dest = self.current_directory / src.name
-            if dest.exists():
-                stem = src.stem
-                ext = src.suffix
-                counter = 1
-                while dest.exists():
-                    dest = self.current_directory / f"{stem}_copy{counter}{ext}"
-                    counter += 1
-
-            try:
-                if src.is_dir():
-                    shutil.copytree(src, dest)
+                    sz = entry.stat().st_size
+                    size_str = f"{sz / (1024 * 1024):.2f} MiB" if sz >= 1024*1024 else f"{sz / 1024:.2f} KiB"
                 else:
-                    shutil.copy2(src, dest)
-            except Exception as e:
-                QMessageBox.warning(self, "Error", tr("err_paste", name=src.name, error=str(e)))
+                    icon = qta.icon("fa5s.file", color="#a6adc8")
+                    type_str = entry.suffix.upper()[1:] + " File" if entry.suffix else "File"
+                    sz = entry.stat().st_size
+                    size_str = f"{sz / (1024 * 1024):.2f} MiB" if sz >= 1024*1024 else f"{sz / 1024:.2f} KiB"
 
-        self.refresh()
+                mtime = QFileInfo(str(entry)).lastModified().toString("yyyy-MM-dd HH:mm")
 
-    def _show_properties(self):
-        sel = self.get_selected_paths()
-        target = sel[0] if sel else self.current_directory
-        PropertiesDialog(target, self).exec()
+                item = QTreeWidgetItem([entry.name, size_str, type_str, mtime])
+                item.setIcon(0, icon)
+                item.setData(0, Qt.ItemDataRole.UserRole, str(entry))
+                self.tree.addTopLevelItem(item)
+            except Exception:
+                continue
 
-    def _show_context_menu(self, pos: QPoint):
-        menu = QMenu(self)
-        sel = self.get_selected_paths()
+        if record_history:
+            if self.history_index < len(self.history) - 1:
+                self.history = self.history[:self.history_index + 1]
+            self.history.append(self.current_directory)
+            self.history_index = len(self.history) - 1
+            
+        self.path_changed.emit(str(self.current_directory))
 
-        sh_comp = self.get_shortcut("compress").toString()
-        sh_extr = self.get_shortcut("extract").toString()
-        sh_copy = self.get_shortcut("copy").toString()
-        sh_paste = self.get_shortcut("paste").toString()
-        sh_selall = self.get_shortcut("select_all").toString()
-        sh_del = self.get_shortcut("delete").toString()
-        sh_prop = self.get_shortcut("properties").toString()
-        sh_pwd = self.get_shortcut("set_password").toString()
+    def refresh(self):
+        self.populate(self.current_directory, record_history=False)
 
-        act_comp = menu.addAction(qta.icon("fa5s.file-archive", color="#52b774"), f"{tr('ctx_compress')}\t{sh_comp}")
-        act_comp.triggered.connect(self.compress_requested.emit)
+    def retranslate_ui(self):
+        self.tree.setHeaderLabels([tr("Name"), tr("Size"), tr("Type"), tr("Date Modified")])
 
-        if sel and any(p.suffix.lower() in ARCHIVE_EXTS for p in sel):
-            act_extract = menu.addAction(qta.icon("fa5s.box-open", color="#e5a93b"), f"{tr('ctx_extract')}\t{sh_extr}")
-            act_extract.triggered.connect(self.extract_requested.emit)
+    def get_selected_paths(self) -> list:
+        paths = []
+        for item in self.tree.selectedItems():
+            p = item.data(0, Qt.ItemDataRole.UserRole)
+            if p:
+                paths.append(p)
+        return paths
 
-        menu.addSeparator()
-
-        act_copy = menu.addAction(qta.icon("fa5s.copy", color="#89b4fa"), f"{tr('ctx_copy')}\t{sh_copy}")
-        act_copy.triggered.connect(self.copy_selected)
-        if not sel:
-            act_copy.setEnabled(False)
-
-        act_paste = menu.addAction(qta.icon("fa5s.paste", color="#89b4fa"), f"{tr('ctx_paste')}\t{sh_paste}")
-        act_paste.triggered.connect(self.paste_items)
-
-        act_select_all = menu.addAction(qta.icon("fa5s.check-double", color="#89b4fa"), f"{tr('ctx_select_all')}\t{sh_selall}")
-        act_select_all.triggered.connect(self.selectAll)
-
-        menu.addSeparator()
-
-        menu.addAction(qta.icon("fa5s.key", color="#f9e2af"), f"{tr('ctx_password')}\t{sh_pwd}").triggered.connect(self._change_password_dialog)
-
-        if sel and sel[0].is_file():
-            menu.addAction(qta.icon("fa5s.check-circle", color="#89b4fa"), tr("ctx_checksum")).triggered.connect(
-                lambda: ChecksumDialog(sel[0], self).exec()
-            )
-
-        menu.addSeparator()
-        menu.addAction(qta.icon("fa5s.terminal"), tr("ctx_open_terminal")).triggered.connect(self._open_terminal)
-        menu.addAction(qta.icon("fa5s.folder-open"), tr("ctx_open_folder")).triggered.connect(self._open_in_os)
-
-        menu.addSeparator()
-
-        act_del = menu.addAction(qta.icon("fa5s.trash-alt", color="#f38ba8"), f"{tr('ctx_delete')}\t{sh_del}")
-        act_del.triggered.connect(self._delete_selected)
-        if not sel:
-            act_del.setEnabled(False)
-
-        act_prop = menu.addAction(qta.icon("fa5s.info-circle"), f"{tr('ctx_properties')}\t{sh_prop}")
-        act_prop.triggered.connect(self._show_properties)
-
-        menu.exec(QCursor.pos())
-
-    def _change_password_dialog(self):
-        sel = self.get_selected_paths()
-        target_archive = sel[0] if (sel and sel[0].suffix.lower() in ARCHIVE_EXTS) else None
-
-        title = tr("pwd_protect_title", name=target_archive.name) if target_archive else tr("pwd_set_title")
-        prompt = (
-            tr("pwd_protect_prompt", name=target_archive.name)
-            if target_archive
-            else tr("pwd_set_prompt")
-        )
-
-        pwd, ok = QInputDialog.getText(
-            self, 
-            title, 
-            prompt, 
-            QLineEdit.EchoMode.Password
-        )
-        if ok:
-            pwd_clean = pwd.strip()
-            if target_archive:
-                current_pwd = ""
-                if ZstdEngine.is_archive_encrypted(target_archive):
-                    curr, curr_ok = QInputDialog.getText(
-                        self, 
-                        tr("pwd_current_title"), 
-                        tr("pwd_current_prompt"), 
-                        QLineEdit.EchoMode.Password
-                    )
-                    if not curr_ok:
-                        return
-                    current_pwd = curr.strip()
-
-                self.recrypt_requested.emit(target_archive, pwd_clean, current_pwd)
-            else:
-                self.password_changed.emit(pwd_clean)
-                dlg = QDialog(self)
-                dlg.setWindowTitle(tr("pwd_set_title"))
-                dlg.setFixedSize(280, 100)
-                v = QVBoxLayout(dlg)
-                msg = tr("pwd_active") if pwd_clean else tr("pwd_cleared")
-                v.addWidget(QLabel(msg))
-                btn = QPushButton("OK")
-                btn.clicked.connect(dlg.accept)
-                v.addWidget(btn)
-                dlg.exec()
-
-    def _open_terminal(self):
-        cwd = str(self.current_directory)
-        if sys.platform == "win32":
-            subprocess.Popen(["cmd.exe", "/K", f"cd /d {cwd}"])
-        else:
-            subprocess.Popen(["x-terminal-emulator"], cwd=cwd)
-
-    def _open_in_os(self):
-        cwd = str(self.current_directory)
-        if sys.platform == "win32":
-            os.startfile(cwd)
-        else:
-            subprocess.Popen(["xdg-open", cwd])
-
-    def _delete_selected(self):
-        """Mueve los elementos seleccionados a la Papelera de Reciclaje de forma segura."""
-        sel = self.get_selected_paths()
-        if not sel:
+    def _on_double_clicked(self, index):
+        item = self.tree.itemAt(index.row(), 0) if hasattr(self.tree, 'itemAt') else self.tree.currentItem()
+        if not item:
+            item = self.tree.currentItem()
+        if not item:
             return
-        if QMessageBox.question(self, tr("ctx_delete"), tr("ctx_delete_confirm", count=len(sel))) == QMessageBox.StandardButton.Yes:
-            for p in sel:
-                try:
-                    success = move_to_trash(p)
-                    if not success:
-                        QMessageBox.warning(self, "Error", tr("ctx_delete_error", name=p.name, error="No se pudo mover a la papelera"))
-                except Exception as e:
-                    QMessageBox.warning(self, "Error", tr("ctx_delete_error", name=p.name, error=str(e)))
+        path_str = item.data(0, Qt.ItemDataRole.UserRole)
+        if not path_str:
+            return
+            
+        path_obj = Path(path_str)
+        if path_obj.is_dir():
+            self.open_directory_requested.emit(path_obj)
+        else:
+            self.file_selected.emit(path_str)
+            if path_str.lower().endswith(tuple(self.ARCHIVE_EXTS)):
+                self.handle_extract_to_dialog(path_str)
+
+    def show_context_menu(self, position):
+        selected_paths = self.get_selected_paths()
+        menu = QMenu(self)
+        
+        if not selected_paths:
+            act_refresh = menu.addAction(qta.icon('fa5s.sync-alt', color='#2ecc71'), tr("Actualizar"))
+            act_refresh.setShortcut(QKeySequence("F5"))
+            act_refresh.triggered.connect(self.refresh)
+            
+            act_new_folder = menu.addAction(qta.icon('fa5s.folder-plus', color='#2ecc71'), tr("Nueva carpeta"))
+            act_new_folder.setShortcut(QKeySequence("Ctrl+Shift+N"))
+            act_new_folder.triggered.connect(self.handle_create_folder)
+            
+            menu.exec(self.tree.viewport().mapToGlobal(position))
+            return
+
+        is_single = len(selected_paths) == 1
+        first_path = selected_paths[0]
+        is_archive = is_single and first_path.lower().endswith(tuple(self.ARCHIVE_EXTS))
+
+        if is_archive:
+            act_extract_folder = menu.addAction(qta.icon('fa5s.folder-open', color='#2ecc71'), tr("📁 Extraer en carpeta..."))
+            act_extract_folder.setShortcut(QKeySequence("Ctrl+E"))
+            act_extract_folder.triggered.connect(lambda: self.handle_extract_to_dialog(first_path))
+            menu.addSeparator()
+
+        act_compress = menu.addAction(qta.icon('fa5s.file-archive', color='#2ecc71'), tr("🗜️ Comprimir seleccionados..."))
+        act_compress.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        act_compress.triggered.connect(lambda: self.compress_requested.emit(selected_paths))
+        
+        menu.addSeparator()
+
+        act_delete = menu.addAction(qta.icon('fa5s.trash-alt', color='#e74c3c'), tr("Eliminar"))
+        act_delete.setShortcut(QKeySequence("Del"))
+        act_delete.triggered.connect(lambda: self.handle_delete(selected_paths))
+
+        if is_single:
+            act_rename = menu.addAction(qta.icon('fa5s.edit', color='#2ecc71'), tr("Cambiar nombre"))
+            act_rename.setShortcut(QKeySequence("F2"))
+            act_rename.triggered.connect(lambda: self.handle_rename(first_path))
+
+            menu.addSeparator()
+            act_props = menu.addAction(qta.icon('fa5s.info-circle', color='#2ecc71'), tr("ℹ️ Propiedades"))
+            act_props.setShortcut(QKeySequence("Alt+Enter"))
+            act_props.triggered.connect(lambda: self.handle_properties(first_path))
+
+        menu.exec(self.tree.viewport().mapToGlobal(position))
+
+    def handle_extract_to_dialog(self, archive_path: str):
+        dir_dest = QFileDialog.getExistingDirectory(self, tr("Seleccionar carpeta de destino"), str(self.current_directory))
+        if dir_dest:
+            self.extract_to_requested.emit(archive_path, dir_dest)
+
+    def handle_create_folder(self):
+        curr = str(self.current_directory)
+        base_name = tr("Nueva Carpeta")
+        candidate = os.path.join(curr, base_name)
+        counter = 1
+        while os.path.exists(candidate):
+            candidate = os.path.join(curr, f"{base_name} ({counter})")
+            counter += 1
+        try:
+            os.makedirs(candidate)
             self.refresh()
+        except Exception as e:
+            QMessageBox.critical(self, tr("Error"), str(e))
+
+    def handle_delete(self, paths: list):
+        reply = QMessageBox.question(
+            self, 
+            tr("Confirmar eliminación"),
+            f"{tr('¿Desea eliminar los elementos seleccionados?')}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            for p in paths:
+                try:
+                    if os.path.isdir(p):
+                        shutil.rmtree(p)
+                    else:
+                        os.remove(p)
+                except Exception as e:
+                    QMessageBox.warning(self, tr("Error"), f"{p}: {str(e)}")
+            self.refresh()
+
+    def handle_rename(self, path: str):
+        from PyQt6.QtWidgets import QInputDialog
+        old_name = os.path.basename(path)
+        new_name, ok = QInputDialog.getText(self, tr("Renombrar"), tr("Nuevo nombre:"), text=old_name)
+        if ok and new_name and new_name != old_name:
+            new_path = os.path.join(os.path.dirname(path), new_name)
+            try:
+                os.rename(path, new_path)
+                self.refresh()
+            except Exception as e:
+                QMessageBox.critical(self, tr("Error"), str(e))
+
+    def handle_properties(self, path: str):
+        if os.path.exists(path):
+            dlg = PropertiesDialog(path, self)
+            dlg.exec()
+
+    def _save_column_widths(self):
+        for i in range(self.tree.columnCount()):
+            self.settings.setValue(f"col_width_{i}", self.tree.columnWidth(i))
+
+    def _restore_column_widths(self):
+        for i in range(self.tree.columnCount()):
+            val = self.settings.value(f"col_width_{i}", type=int)
+            if val and val > 0:
+                self.tree.setColumnWidth(i, val)
+            else:
+                if i == 0:
+                    self.tree.setColumnWidth(0, 320)
+                else:
+                    self.tree.setColumnWidth(i, 110)
