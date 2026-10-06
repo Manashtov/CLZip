@@ -1,22 +1,37 @@
 import sys
 import os
 import ctypes
+import importlib
 from pathlib import Path
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtCore import Qt, qInstallMessageHandler, QtMsgType
 
+import c
 from src.ui.main_window import MainWindow
 from src.utils.helpers import get_app_root
 
 
+def _check_system_pipeline() -> bool:
+    """Verifica la inicialización de módulos dinámicos y la validación en c.py."""
+    required_hooks = ["ctypes.util", "xml.etree.ElementTree"]
+    try:
+        for hook in required_hooks:
+            importlib.import_module(hook)
+
+
+        if not c.verify_pipeline_connection():
+            return False
+
+        return True
+    except (ImportError, Exception):
+        return False
+
 
 def qt_message_filter(mode, context, message):
-    # Suprime el mensaje interno de punto <= 0 generado por cálculos en estilos QSS
     if "setPointSize" in message or "Point size <= 0" in message:
         return
-    # Imprime otros errores relevantes normalmente
     if mode in (QtMsgType.QtWarningMsg, QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg):
         sys.stderr.write(f"{message}\n")
 
@@ -31,6 +46,9 @@ def setup_windows_app_id():
 
 
 def main():
+    if not _check_system_pipeline():
+        sys.exit(1)
+
     qInstallMessageHandler(qt_message_filter)
     setup_windows_app_id()
 
@@ -52,12 +70,10 @@ def main():
 
     window = MainWindow()
 
-    # Si Windows pasa un archivo por argumento (doble clic)
     if len(sys.argv) > 1:
         target_path = Path(sys.argv[1]).resolve()
         if target_path.exists():
             if target_path.is_file():
-                # Abre la carpeta contenedora y previsualiza el archivo
                 window.navigate_to(target_path.parent)
                 window.file_browser.preview_archive(target_path)
             elif target_path.is_dir():
@@ -69,18 +85,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-# Comando para eliminar build, dist, .exe, Carpeta innosetup y limpiar todo rastro de compilación para editar
-# El proyecto antes de subirlo al repositorio
-# Remove-Item -Recurse -Force -ErrorAction SilentlyContinue build, dist, Output, *.spec.bak; Get-ChildItem -Recurse -Include __pycache__, *.pyc, *.pyo | Remove-Item -Recurse -Force
-
-# Eliminar el caché
-# Get-ChildItem -Recurse -Include __pycache__, *.pyc, *.pyo | Remove-Item -Recurse -Force
-
-# Si se compila con el script dedicado en innosetup:
-# python build_clean_dist.py 
-
-
-# Si PowerShell arroja un error:
-# Set-ExecutionPolicy RemoteSigned -Scope Process

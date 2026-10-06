@@ -57,11 +57,20 @@ class FileBrowserPanel(QWidget):
         
         self.tree.setHeaderLabels([tr("col_name"), tr("col_size"), tr("col_type"), tr("col_modified")])
         
+        # 1. Habilitar ordenamiento automático (ascendente/descendente) al clickear cabeceras
+        self.tree.setSortingEnabled(True)
+        
         header = self.tree.header()
+        
+        # 2. Desactivar el estiramiento forzado de la última columna
+        header.setStretchLastSection(False)
+        
+        # 3. Permitir el ajuste libre de todas las columnas a voluntad del usuario
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        
         header.sectionResized.connect(self._save_column_widths)
         
         self.tree.itemClicked.connect(self._on_item_clicked)

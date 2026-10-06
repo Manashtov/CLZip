@@ -1,20 +1,8 @@
 from pathlib import Path
 from PyQt6.QtWidgets import (
-    QDialog,
-    QVBoxLayout,
-    QHBoxLayout,
-    QTabWidget,
-    QWidget,
-    QLabel,
-    QComboBox,
-    QPushButton,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
-    QKeySequenceEdit,
-    QMessageBox,
-    QGroupBox,
-    QFrame
+    QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget, QLabel,
+    QComboBox, QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
+    QKeySequenceEdit, QMessageBox, QGroupBox, QFrame
 )
 from PyQt6.QtCore import Qt, QSettings, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QPixmap, QFont
@@ -208,14 +196,12 @@ class SettingsDialog(QDialog):
         layout.addWidget(line)
 
         self.lbl_author_tag = QLabel(f"<b>{tr('info_author')}</b> Manashtov")
-        self.lbl_tech_tag = QLabel(f"<b>{tr('info_tech')}</b> Python 3, PyQt6, Zstandard, Pyzipper")
         self.lbl_license_tag = QLabel(f"<b>{tr('info_license')}</b> GPL-3.0")
 
         self.github_label = QLabel()
         self.github_label.setOpenExternalLinks(True)
 
         layout.addWidget(self.lbl_author_tag)
-        layout.addWidget(self.lbl_tech_tag)
         layout.addWidget(self.lbl_license_tag)
         layout.addWidget(self.github_label)
         layout.addStretch()
@@ -262,7 +248,6 @@ class SettingsDialog(QDialog):
 
         self.lbl_app_desc.setText(tr("info_app_desc"))
         self.lbl_author_tag.setText(f"<b>{tr('info_author')}</b> Manashtov")
-        self.lbl_tech_tag.setText(f"<b>{tr('info_tech')}</b> Python 3, PyQt6, Zstandard, Pyzipper")
         self.lbl_license_tag.setText(f"<b>{tr('info_license')}</b> GPL-3.0")
 
         self.btn_reset.setText(tr("btn_reset"))
@@ -489,10 +474,3 @@ class SettingsDialog(QDialog):
         self._update_tab_icons()
         self._update_github_link()
         self.theme_updated.emit()
-
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle(tr("btn_settings"))
-        msg_box.setText(tr("settings_saved"))
-        msg_box.setIcon(QMessageBox.Icon.NoIcon)
-        msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
-        msg_box.exec()
